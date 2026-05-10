@@ -1,44 +1,56 @@
 const router = require('express').Router();
 const db = require('../db');
 
+// Expands non-recurring (unpaid only) and monthly-recurring transactions into
+// dated entries within the 13-week projection window.
+const entriesCte = `
+  params AS (
+    SELECT
+      MAX(balance_date) AS start_date,
+      (SELECT balance_amount FROM balance WHERE balance_date = (SELECT MAX(balance_date) FROM balance)) AS initial_balance
+    FROM balance
+  ),
+  entries AS (
+    SELECT is_income, amount, category, counterparty, due_date AS effective_date
+    FROM transaction
+    CROSS JOIN params
+    WHERE recurrence IS NULL
+      AND paid = FALSE
+      AND due_date >= params.start_date
+      AND due_date <= params.start_date + 90
+    UNION ALL
+    SELECT t.is_income, t.amount, t.category, t.counterparty,
+      (t.due_date + (gs.n * INTERVAL '1 month'))::date AS effective_date
+    FROM transaction t
+    CROSS JOIN generate_series(0, 12) AS gs(n)
+    CROSS JOIN params
+    WHERE t.recurrence = 'monthly'
+      AND (t.due_date + (gs.n * INTERVAL '1 month'))::date >= params.start_date
+      AND (t.due_date + (gs.n * INTERVAL '1 month'))::date <= params.start_date + 90
+  )
+`;
+
 router.get('/', async (req, res) => {
   const balancesQuery = `
-    WITH params AS (
-      SELECT
-        MAX(balance_date) AS start_date,
-        (SELECT balance_amount FROM balance WHERE balance_date = (SELECT MAX(balance_date) FROM balance)) AS initial_balance
-      FROM balance
+    WITH ${entriesCte},
+    weeks AS (SELECT generate_series(1, 13) AS wk),
+    income_weekly AS (
+      SELECT (effective_date - params.start_date) / 7 + 1 AS wk, SUM(amount) AS total_in
+      FROM entries CROSS JOIN params WHERE is_income = TRUE GROUP BY 1
     ),
-    weeks AS (
-      SELECT generate_series(1, 13) AS wk
-    ),
-    invoice_weekly AS (
-      SELECT
-        (due_date - params.start_date) / 7 + 1 AS wk,
-        SUM(amount) AS total_in
-      FROM invoice, params
-      WHERE due_date >= params.start_date
-        AND due_date <= params.start_date + 90
-      GROUP BY 1
-    ),
-    bill_weekly AS (
-      SELECT
-        (due_date - params.start_date) / 7 + 1 AS wk,
-        SUM(amount) AS total_out
-      FROM bill, params
-      WHERE due_date >= params.start_date
-        AND due_date <= params.start_date + 90
-      GROUP BY 1
+    expense_weekly AS (
+      SELECT (effective_date - params.start_date) / 7 + 1 AS wk, SUM(amount) AS total_out
+      FROM entries CROSS JOIN params WHERE is_income = FALSE GROUP BY 1
     ),
     weekly_net AS (
       SELECT
         w.wk AS week_number,
         params.start_date + (w.wk * 7 - 1) AS week_end,
-        COALESCE(iw.total_in, 0) - COALESCE(bw.total_out, 0) AS net_change
+        COALESCE(iw.total_in, 0) - COALESCE(ew.total_out, 0) AS net_change
       FROM weeks w
       CROSS JOIN params
-      LEFT JOIN invoice_weekly iw ON w.wk = iw.wk
-      LEFT JOIN bill_weekly bw ON w.wk = bw.wk
+      LEFT JOIN income_weekly iw ON w.wk = iw.wk
+      LEFT JOIN expense_weekly ew ON w.wk = ew.wk
     )
     SELECT
       wn.week_number,
@@ -54,35 +66,30 @@ router.get('/', async (req, res) => {
   `;
 
   const receiptsQuery = `
-    WITH params AS (
-      SELECT MAX(balance_date) AS start_date FROM balance
-    )
+    WITH ${entriesCte}
     SELECT
-      (due_date - params.start_date) / 7 + 1 AS week_number,
-      params.start_date + ((due_date - params.start_date) / 7 * 7 + 6) AS week_end,
-      COALESCE(client, 'Other') AS name,
+      (effective_date - params.start_date) / 7 + 1 AS week_number,
+      params.start_date + ((effective_date - params.start_date) / 7 * 7 + 6) AS week_end,
+      COALESCE(counterparty, 'Other') AS name,
       SUM(amount) AS amount
-    FROM invoice, params
-    WHERE due_date >= params.start_date
-      AND due_date <= params.start_date + 90
+    FROM entries
+    CROSS JOIN params
+    WHERE is_income = TRUE
     GROUP BY 1, 2, 3
     ORDER BY 1, 3
   `;
 
   const paymentsQuery = `
-    WITH params AS (
-      SELECT MAX(balance_date) AS start_date FROM balance
-    )
+    WITH ${entriesCte}
     SELECT
-      (b.due_date - params.start_date) / 7 + 1 AS week_number,
-      params.start_date + ((b.due_date - params.start_date) / 7 * 7 + 6) AS week_end,
+      (e.effective_date - params.start_date) / 7 + 1 AS week_number,
+      params.start_date + ((e.effective_date - params.start_date) / 7 * 7 + 6) AS week_end,
       COALESCE(c.name, 'Other') AS name,
-      SUM(b.amount) AS amount
-    FROM bill b
-    LEFT JOIN category c ON b.category = c.id
+      SUM(e.amount) AS amount
+    FROM entries e
+    LEFT JOIN category c ON e.category = c.id
     CROSS JOIN params
-    WHERE b.due_date >= params.start_date
-      AND b.due_date <= params.start_date + 90
+    WHERE e.is_income = FALSE
     GROUP BY 1, 2, 3
     ORDER BY 1, 3
   `;

@@ -4,13 +4,13 @@ import Modal from '../components/Modal';
 
 const empty = { name: '' };
 
-export default function Categories() {
+export default function Projects() {
   const [rows, setRows] = useState([]);
   const [modal, setModal] = useState(null);
   const [form, setForm] = useState(empty);
   const [error, setError] = useState('');
 
-  const load = () => api.get('/api/categories').then(setRows);
+  const load = () => api.get('/api/projects').then(setRows);
   useEffect(() => { load(); }, []);
 
   function openAdd() { setForm(empty); setError(''); setModal({ mode: 'add' }); }
@@ -20,22 +20,22 @@ export default function Categories() {
   async function save() {
     if (!form.name.trim()) { setError('Name is required'); return; }
     try {
-      if (modal.mode === 'add') await api.post('/api/categories', form);
-      else await api.put(`/api/categories/${modal.id}`, form);
+      if (modal.mode === 'add') await api.post('/api/projects', form);
+      else await api.put(`/api/projects/${modal.id}`, form);
       close(); load();
     } catch (e) { setError(e.message); }
   }
 
   async function del(id) {
-    if (!confirm('Delete this category? Transactions using it will lose their category.')) return;
-    await api.delete(`/api/categories/${id}`);
+    if (!confirm('Delete this project? Transactions using it will lose their project association.')) return;
+    await api.delete(`/api/projects/${id}`);
     load();
   }
 
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
-        <h1 className="text-xl font-semibold text-gray-800">Categories</h1>
+        <h1 className="text-xl font-semibold text-gray-800">Projects</h1>
         <button onClick={openAdd} className="px-3 py-1.5 bg-blue-600 text-white text-sm rounded hover:bg-blue-700">+ Add</button>
       </div>
 
@@ -57,13 +57,13 @@ export default function Categories() {
                 </td>
               </tr>
             ))}
-            {rows.length === 0 && <tr><td colSpan={2} className="px-4 py-6 text-center text-gray-400">No categories</td></tr>}
+            {rows.length === 0 && <tr><td colSpan={2} className="px-4 py-6 text-center text-gray-400">No projects</td></tr>}
           </tbody>
         </table>
       </div>
 
       {modal && (
-        <Modal title={modal.mode === 'add' ? 'Add Category' : 'Edit Category'} onClose={close}>
+        <Modal title={modal.mode === 'add' ? 'Add Project' : 'Edit Project'} onClose={close}>
           <div className="space-y-3">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Name</label>
